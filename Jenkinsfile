@@ -44,6 +44,7 @@ pipeline {
                         docker stop $DOCKER_IMAGE || true
                         docker rm -f $DOCKER_IMAGE || true
                         docker run -d --restart unless-stopped --name $DOCKER_IMAGE -p 8080:8080 \
+                        --network api-network \
                         -e DATABASE_URL=mysql://root:root@mysql:3306/rest_db \
                         -e DB_USER=root \
                         -e DB_PASSWORD=root \
