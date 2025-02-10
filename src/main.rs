@@ -269,24 +269,50 @@ async fn list_tasks(pool: web::Data<Pool>) -> Result<HttpResponse, Error> {
     let mut conn = pool.get_conn()
         .map_err(|e| ApiError::DbError(e))?;
     
-    let tasks: Vec<Task> = conn
-        .exec_map(
-            "SELECT t.id, t.title, t.description, t.status_id, ts.name as status_name,
-                    DATE_FORMAT(t.date_from, '%Y-%m-%d') as date_from, 
-                    DATE_FORMAT(t.due_date, '%Y-%m-%d') as due_date 
+    let tasks: Vec<TaskWithAssignments> = conn
+        .query_map(
+            "SELECT t.id, t.title, COALESCE(t.description, '') as description, 
+                    t.status_id, ts.name as status,
+                    DATE_FORMAT(t.date_from, '%Y-%m-%d') as date_from,
+                    DATE_FORMAT(t.due_date, '%Y-%m-%d') as due_date,
+                    GROUP_CONCAT(DISTINCT u.id) as user_ids,
+                    GROUP_CONCAT(DISTINCT u.name) as user_names,
+                    GROUP_CONCAT(DISTINCT u.email) as user_emails
             FROM tasks t
             LEFT JOIN task_statuses ts ON t.status_id = ts.id
+            LEFT JOIN task_assignments ta ON t.id = ta.task_id
+            LEFT JOIN users u ON ta.user_id = u.id
+            GROUP BY t.id, t.title, t.description, t.status_id, ts.name, t.date_from, t.due_date
             ORDER BY t.id",
-            (),
-            |(id, title, description, status_id, status_name, date_from, due_date): (Option<i32>, String, Option<String>, i32, Option<String>, String, String)| {
-                Task {
+            |(id, title, description, status_id, status, date_from, due_date, user_ids, user_names, user_emails): 
+            (i32, String, String, i32, String, String, String, Option<String>, Option<String>, Option<String>)| {
+                let assigned_users = if let (Some(ids), Some(names), Some(emails)) = (user_ids, user_names, user_emails) {
+                    let ids: Vec<&str> = ids.split(',').collect();
+                    let names: Vec<&str> = names.split(',').collect();
+                    let emails: Vec<&str> = emails.split(',').collect();
+                    
+                    ids.iter()
+                        .zip(names.iter())
+                        .zip(emails.iter())
+                        .map(|((id, name), email)| AssignedUser {
+                            id: id.parse().unwrap_or(0),
+                            name: name.to_string(),
+                            email: email.to_string(),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+
+                TaskWithAssignments {
                     id,
                     title,
                     description,
                     status_id,
-                    status: status_name,
+                    status,
                     date_from,
                     due_date,
+                    assigned_users,
                 }
             },
         )
@@ -548,7 +574,6 @@ fn is_valid_email(email: &str) -> bool {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct UserData {
-    id: i32,
     name: String,
     email: String,
 }
@@ -610,7 +635,6 @@ async fn login(credentials: web::Json<LoginRequest>, pool: web::Data<Pool>) -> R
                         success: true,
                         message: "Inicio de sesión exitoso".to_string(),
                         user: UserData {
-                            id: user_id,
                             name: db_name,
                             email: db_email,
                         }
